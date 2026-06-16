@@ -13,12 +13,12 @@
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'Segoe UI',system-ui,sans-serif;}
 :root{
-  --bg1:#ffffff; --bg2:#f8f9fa; --bg3:#f0f2f5;
-  --bg-info:#e7f0ff; --bg-ok:#e8f5e9; --bg-warn:#fff8e1;
-  --text1:#1a1a2e; --text2:#6c757d;
-  --clr-danger:#dc3545; --clr-ok:#198754; --clr-warn:#e68a00; --clr-info:#0d6efd;
-  --border1:#333333; --border2:#dee2e6; --border3:#e9ecef;
-  --border-info:#b3ccff; --border-ok:#a5d6a7; --border-warn:#ffe082;
+  --bg1:#ffffff;--bg2:#f8f9fa;--bg3:#f0f2f5;
+  --bg-info:#e7f0ff;--bg-ok:#e8f5e9;--bg-warn:#fff8e1;
+  --text1:#1a1a2e;--text2:#6c757d;
+  --clr-danger:#dc3545;--clr-ok:#198754;--clr-warn:#e68a00;--clr-info:#0d6efd;
+  --border1:#333333;--border2:#dee2e6;--border3:#e9ecef;
+  --border-info:#b3ccff;--border-ok:#a5d6a7;--border-warn:#ffe082;
   --mono:'Courier New',Courier,monospace;
 }
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
@@ -141,10 +141,35 @@ function computeTax(d, isSME) {
   const npbt=v(d.netProfitBeforeTax), dep=v(d.depreciation), ent=v(d.entertainmentDisallowed),
     pen=v(d.penalties), nonDon=v(d.nonApprovedDonations), taxProv=v(d.incomeTaxProvision),
     priv=v(d.privateExpenses), capIt=v(d.capitalItemsToAddBack), other=v(d.otherAddBacks);
-  const totalAB = dep + ent + pen + nonDon + taxProv + priv + capIt + other;
-  const div=v(d.dividendIncome), inte=v(d.interestIncome), ren=v(d.rentalIncome), roy=v(d.royaltyIncome);
-  const totalNTI = div + inte + ren + roy;
-  const adjIncome = npbt + totalAB - totalNTI;
+
+  // Dividend income: EXEMPT for companies under single-tier system (Schedule 6, ITA 1967).
+  // Transferred OUT of business income but NOT re-introduced to aggregate income.
+  const div = v(d.dividendIncome);
+  // Interest s.4(c), Rental s.4(d), Royalty s.4(d): taxable — transferred out, then re-introduced
+  const inte=v(d.interestIncome), ren=v(d.rentalIncome), roy=v(d.royaltyIncome);
+  const taxableOther = inte + ren + roy;          // re-introduced to aggregate income
+  const totalTransferOut = div + inte + ren + roy; // all P&L other income transferred out
+
+  // s.33 ITA 1967: If NO business revenue, ALL expenses are non-allowable.
+  // Adjusted income = gross business revenue = 0.
+  const grossRev = d.grossRevenue === "" || d.grossRevenue === undefined ? null : v(d.grossRevenue);
+  const noRevenue = grossRev !== null && grossRev === 0;
+
+  // Step 2: Remove other income first → business profit/(loss)
+  const businessProfit = npbt - totalTransferOut;
+
+  let totalAB, adjIncome, noRevenueAddBack = 0;
+  if (noRevenue) {
+    // s.33: All expenses disallowed = the pure business loss (expenses with no revenue)
+    // businessProfit here = 0 - expenses = negative (business expenses only)
+    noRevenueAddBack = Math.max(0, -businessProfit); // add back all to reach 0
+    totalAB = 0;
+    adjIncome = 0;
+  } else {
+    // Step 3: Add back disallowed expenses → adjusted income (before CA)
+    totalAB = dep + ent + pen + nonDon + taxProv + priv + capIt + other;
+    adjIncome = businessProfit + totalAB;
+  }
   const ca = d.capitalAllowances || {};
   const caRows = Object.entries(ca).map(([k, x]) => {
     const ia=v(x.ia), aa=v(x.aa), bc=v(x.balancingCharge), ba=v(x.balancingAllowance);
@@ -154,7 +179,8 @@ function computeTax(d, isSME) {
   let statIncome = 0, unusedCA = 0;
   if (adjIncome >= totalCA) { statIncome = adjIncome - totalCA; }
   else { unusedCA = totalCA - Math.max(adjIncome, 0); }
-  const aggregateIncome = statIncome + totalNTI;
+  // Aggregate income: statutory business income + taxable other income ONLY (dividends excluded — exempt)
+  const aggregateIncome = statIncome + taxableOther;
   const maxDon = Math.max(0, 0.1 * aggregateIncome);
   const donDeduct = Math.min(v(d.approvedDonations), maxDon);
   const totalIncome = aggregateIncome - donDeduct;
@@ -182,7 +208,10 @@ function computeTax(d, isSME) {
   const netTax = grossTax - totalCredits;
   return {
     npbt, dep, ent, pen, nonDon, taxProv, priv, capIt, other, totalAB,
-    div, inte, ren, roy, totalNTI, adjIncome, caRows, totalCA, unusedCA,
+    noRevenue, noRevenueAddBack, grossRev,
+    div, inte, ren, roy, taxableOther, totalTransferOut, businessProfit,
+    totalNTI: totalTransferOut,   // alias kept for PDF generator compatibility
+    adjIncome, caRows, totalCA, unusedCA,
     statIncome, aggregateIncome, maxDon, donDeduct, approvedDonations: v(d.approvedDonations),
     totalIncome, maxLoss, lossDeduct, unabsorbedLossesBF: v(d.unabsorbedLossesBF),
     caDeduct, unabsorbedCABF: v(d.unabsorbedCABF),
@@ -194,7 +223,7 @@ function computeTax(d, isSME) {
    INITIAL DATA
 ═══════════════════════════════════════════════════════════════════════ */
 const INIT = {
-  netProfitBeforeTax:0, depreciation:0, entertainmentDisallowed:0, penalties:0,
+  grossRevenue:"", netProfitBeforeTax:0, depreciation:0, entertainmentDisallowed:0, penalties:0,
   nonApprovedDonations:0, incomeTaxProvision:0, privateExpenses:0, capitalItemsToAddBack:0, otherAddBacks:0,
   dividendIncome:0, interestIncome:0, rentalIncome:0, royaltyIncome:0,
   capitalAllowances: {
@@ -209,7 +238,7 @@ const INIT = {
 };
 
 const DEMO = {
-  netProfitBeforeTax:850000, depreciation:125000, entertainmentDisallowed:15000, penalties:3200,
+  grossRevenue:2000000, netProfitBeforeTax:850000, depreciation:125000, entertainmentDisallowed:15000, penalties:3200,
   nonApprovedDonations:5000, incomeTaxProvision:180000, privateExpenses:12000, capitalItemsToAddBack:8500, otherAddBacks:4300,
   dividendIncome:20000, interestIncome:8500, rentalIncome:0, royaltyIncome:0,
   capitalAllowances: {
@@ -232,6 +261,7 @@ STEP 1 — READ THE DOCUMENT CAREFULLY
 Look at every page: Profit & Loss / Income Statement, Balance Sheet, Notes to Accounts, Fixed Asset Schedule.
 
 STEP 2 — FIELD MAPPING GUIDE (common Malaysian account labels → JSON field):
+- "Revenue" / "Turnover" / "Sales" / "Hasil" / "Jualan" → grossRevenue (0 if no revenue at all)
 - "Profit before taxation" / "Net profit before tax" / "Untung sebelum cukai" → netProfitBeforeTax (LOSS = negative number)
 - "Depreciation" / "Susutnilai" / "Depreciation of property, plant and equipment" → depreciation
 - "Entertainment" / "Hiburan" / "Jamuan" → entertainmentExpensesTotal (entertainmentDisallowed = half of this)
@@ -254,7 +284,7 @@ If a Fixed Asset Schedule / PPE note exists, extract IA and AA per category. Oth
 Return ONLY this JSON object. Start with { end with }. No text outside the braces. No markdown.
 {
   "companyInfo": {"name":"","yearOfAssessment":"","basisPeriodStart":"","basisPeriodEnd":""},
-  "netProfitBeforeTax":0,"depreciation":0,"entertainmentExpensesTotal":0,"entertainmentDisallowed":0,
+  "grossRevenue":0,"netProfitBeforeTax":0,"depreciation":0,"entertainmentExpensesTotal":0,"entertainmentDisallowed":0,
   "penalties":0,"nonApprovedDonations":0,"incomeTaxProvision":0,"privateExpenses":0,
   "capitalItemsToAddBack":0,"otherAddBacks":0,"dividendIncome":0,"interestIncome":0,
   "rentalIncome":0,"royaltyIncome":0,"approvedDonations":0,"unabsorbedLossesBF":0,
@@ -325,6 +355,20 @@ ${info.incNo  ? `<p class="center">Company No.: ${info.incNo}</p>` : ""}
 <tr><td class="lbl bold">DESCRIPTION</td><td class="col1 bold">RM</td><td class="col2 bold">RM</td></tr>
 <tr><td colspan="3"><span class="section-hd">A. BUSINESS INCOME COMPUTATION</span></td></tr>
 <tr><td>Net profit/(loss) per accounts (before income tax)</td><td></td><td class="col2">${fm(res.npbt,false)}</td></tr>
+${res.totalTransferOut>0?`
+<tr><td class="bold indent1" colspan="3">LESS: Other Income Transferred Out to s.4 Subsections</td></tr>
+${res.div>0?`<tr><td class="indent2">Dividend income [s.4(c)] <em>(EXEMPT — Schedule 6, single-tier system)</em></td><td class="col1">(${R(res.div)})</td><td></td></tr>`:""}
+${res.inte>0?`<tr><td class="indent2">Interest income [s.4(c)]</td><td class="col1">(${R(res.inte)})</td><td></td></tr>`:""}
+${res.ren>0?`<tr><td class="indent2">Rental income [s.4(d)]</td><td class="col1">(${R(res.ren)})</td><td></td></tr>`:""}
+${res.roy>0?`<tr><td class="indent2">Royalty income [s.4(d)]</td><td class="col1">(${R(res.roy)})</td><td></td></tr>`:""}
+<tr class="underline"><td class="indent1 bold">Total other income</td><td class="col1 bold">(${R(res.totalTransferOut)})</td><td></td></tr>
+<tr><td class="indent1" style="font-style:italic">Business profit/(loss)</td><td></td><td class="col2" style="font-style:italic">${fm(res.businessProfit,false)}</td></tr>
+`:``}
+${res.noRevenue?`
+<tr><td class="bold indent1" colspan="3">ADD: All expenses — fully disallowed [s.33 ITA 1967 — no business gross income]</td></tr>
+<tr><td class="indent2">Total business expenses per accounts (all non-allowable)</td><td class="col1">${R(res.noRevenueAddBack)}</td><td></td></tr>
+<tr class="underline"><td class="indent1 bold">Total add-backs (all disallowed)</td><td class="col1 bold">${R(res.noRevenueAddBack)}</td><td></td></tr>
+`:`
 <tr><td class="bold indent1" colspan="3">ADD: Non-Allowable Expenses</td></tr>
 ${res.dep>0?`<tr><td class="indent2">Depreciation &amp; amortisation per accounts [s.39(1)(a)]</td><td class="col1">${R(res.dep)}</td><td></td></tr>`:""}
 ${res.ent>0?`<tr><td class="indent2">Entertainment expenses – 50% disallowed [s.39(1)(l), PR 4/2015]</td><td class="col1">${R(res.ent)}</td><td></td></tr>`:""}
@@ -335,13 +379,7 @@ ${res.priv>0?`<tr><td class="indent2">Private &amp; personal expenses [s.39(1)(a
 ${res.capIt>0?`<tr><td class="indent2">Capital items charged to P&amp;L [s.39(1)(a)]</td><td class="col1">${R(res.capIt)}</td><td></td></tr>`:""}
 ${res.other>0?`<tr><td class="indent2">Other non-allowable items</td><td class="col1">${R(res.other)}</td><td></td></tr>`:""}
 <tr class="underline"><td class="indent1 bold">Total add-backs</td><td class="col1 bold">${R(res.totalAB)}</td><td></td></tr>
-${res.totalNTI>0?`
-<tr><td class="bold indent1" colspan="3">LESS: Non-Taxable Income Transferred Out</td></tr>
-${res.div>0?`<tr><td class="indent2">Dividend income [s.4(b)]</td><td class="col1">(${R(res.div)})</td><td></td></tr>`:""}
-${res.inte>0?`<tr><td class="indent2">Interest income [s.4(c)]</td><td class="col1">(${R(res.inte)})</td><td></td></tr>`:""}
-${res.ren>0?`<tr><td class="indent2">Rental income [s.4(d)]</td><td class="col1">(${R(res.ren)})</td><td></td></tr>`:""}
-${res.roy>0?`<tr><td class="indent2">Royalty income [s.4(d)]</td><td class="col1">(${R(res.roy)})</td><td></td></tr>`:""}
-<tr class="underline"><td class="indent1 bold">Total transferred out</td><td class="col1 bold">(${R(res.totalNTI)})</td><td></td></tr>`:""}
+`}
 <tr class="grand"><td>ADJUSTED INCOME</td><td></td><td class="col2">${fm(res.adjIncome,false)}</td></tr>
 ${res.totalCA>0?`
 <tr><td colspan="3"><span class="section-hd">B. CAPITAL ALLOWANCES (Schedule 3, ITA 1967)</span></td></tr>
@@ -355,10 +393,10 @@ ${r.bc>0?`<tr><td style="padding-left:48px">– Balancing Charge (add back)</td>
 `).join("")}
 <tr class="underline"><td class="indent1 bold">Total Capital Allowances</td><td class="col1 bold">(${R(res.totalCA)})</td><td></td></tr>`:""}
 <tr class="grand"><td>STATUTORY INCOME FROM BUSINESS [s.4(a)]</td><td></td><td class="col2">${fm(res.statIncome,false)}</td></tr>
-${res.totalNTI>0?`
+${res.taxableOther>0?`
 <tr><td colspan="3"><span class="section-hd">C. AGGREGATE INCOME</span></td></tr>
-<tr><td class="bold indent1" colspan="3">ADD: Other Statutory Income</td></tr>
-${res.div>0?`<tr><td class="indent2">Dividend income [s.4(b)]</td><td class="col1">${R(res.div)}</td><td></td></tr>`:""}
+<tr><td class="bold indent1" colspan="3">ADD: Other income</td></tr>
+<tr><td class="indent2" colspan="3" style="font-style:italic;font-size:8.5pt">Note: Dividend income is EXEMPT for companies under Schedule 6 ITA 1967 (single-tier system) — not re-introduced.</td></tr>
 ${res.inte>0?`<tr><td class="indent2">Interest income [s.4(c)]</td><td class="col1">${R(res.inte)}</td><td></td></tr>`:""}
 ${res.ren>0?`<tr><td class="indent2">Rental income [s.4(d)]</td><td class="col1">${R(res.ren)}</td><td></td></tr>`:""}
 ${res.roy>0?`<tr><td class="indent2">Royalty income [s.4(d)]</td><td class="col1">${R(res.roy)}</td><td></td></tr>`:""}`:``}
@@ -557,7 +595,7 @@ function App() {
         console.log("Accounts:", p);
         const ca = k => ({ ia:n(p.capitalAllowances?.[k]?.ia), aa:n(p.capitalAllowances?.[k]?.aa), balancingCharge:n(p.capitalAllowances?.[k]?.balancingCharge), balancingAllowance:n(p.capitalAllowances?.[k]?.balancingAllowance) });
         merged = {
-          netProfitBeforeTax:n(p.netProfitBeforeTax), depreciation:n(p.depreciation),
+          grossRevenue: p.grossRevenue !== undefined ? n(p.grossRevenue) : "", netProfitBeforeTax:n(p.netProfitBeforeTax), depreciation:n(p.depreciation),
           entertainmentDisallowed: n(p.entertainmentDisallowed) || n(p.entertainmentExpensesTotal) * 0.5,
           penalties:n(p.penalties), nonApprovedDonations:n(p.nonApprovedDonations),
           incomeTaxProvision:n(p.incomeTaxProvision), privateExpenses:n(p.privateExpenses),
@@ -844,47 +882,114 @@ function App() {
 
         {/* A. Business Income */}
         <div style={S.secHd}>A. Business income computation</div>
-        <div style={S.rowBase}>
-          <div style={{ fontSize:13, display:"flex", alignItems:"center" }}>Net profit/(loss) per accounts (before tax){infoBtn("netProfit")}</div>
-          <div />{numCell(fm(res.npbt), res.npbt < 0)}
+
+        {/* Gross Revenue input */}
+        <div style={{ ...S.rowBase, background:"var(--bg-info)", borderRadius:6, padding:"8px 6px", marginBottom:4 }}>
+          <div style={{ fontSize:13, display:"flex", alignItems:"center", gap:6 }}>
+            <strong>Gross revenue / turnover (RM)</strong>
+            <span style={{ fontSize:11, color:"var(--clr-info)", background:"rgba(13,110,253,0.08)", borderRadius:4, padding:"1px 6px" }}>
+              Enter 0 if dormant / no business revenue [s.33 ITA 1967]
+            </span>
+          </div>
+          <div />
+          <input style={{ ...S.input, ...S.mono, padding:"4px 8px", fontSize:12, borderColor: res.noRevenue ? "var(--clr-danger)" : "var(--border2)" }}
+            type="number" step="any" min="0" value={data.grossRevenue} placeholder="e.g. 1,500,000"
+            onChange={e => setData(p => ({ ...p, grossRevenue: e.target.value }))} />
         </div>
 
-        <div style={{ marginTop:8, marginBottom:4, fontSize:12, fontWeight:500, color:"var(--text2)" }}>ADD: Non-allowable expenses</div>
-        {[
-          ["Depreciation & amortisation per accounts [s.39(1)(a)]",                    "depreciation",           "depreciation"],
-          ["Entertainment expenses – 50% disallowed [s.39(1)(l), PR 4/2015]",          "entertainmentDisallowed","entertainment"],
-          ["Penalties, fines & surcharges [s.39(1)(a)]",                               "penalties",              "penalties"],
-          ["Donations to non-approved bodies [s.44(6)]",                               "nonApprovedDonations",   "donationsNonApproved"],
-          ["Income tax provision (current & deferred) [s.39(1)(a)]",                   "incomeTaxProvision",     "taxProvision"],
-          ["Private & personal expenses [s.39(1)(a)]",                                 "privateExpenses",        "privateExpenses"],
-          ["Capital items incorrectly charged to P&L [s.39(1)(a)]",                    "capitalItemsToAddBack",  "capitalItems"],
-          ["Other non-allowable items",                                                 "otherAddBacks",          null],
-        ].map(([label, field, nk]) => (
-          <div key={field} style={S.rowBase}>
-            <div style={{ fontSize:13, display:"flex", alignItems:"center" }}>{label}{infoBtn(nk)}</div>
-            <div />
-            {NumInput(field, data[field])}
+        {/* No-revenue warning */}
+        {res.noRevenue && (
+          <div style={{ background:"rgba(220,53,69,0.07)", border:"1px solid rgba(220,53,69,0.3)", borderRadius:8, padding:"10px 14px", marginBottom:8, fontSize:12, color:"var(--clr-danger)" }}>
+            ⚠ <strong>No business revenue declared.</strong> Under s.33 ITA 1967, expenses must be wholly &amp; exclusively incurred to produce gross income.
+            Since there is no business gross income, ALL expenses are non-allowable — business adjusted income = <strong>RM 0.00</strong>.
           </div>
-        ))}
-        <div style={S.rowTotal}><div style={{ fontSize:13 }}>Total add-backs</div><div /><div style={S.numCell}>{fm(res.totalAB)}</div></div>
+        )}
 
-        <div style={{ marginTop:8, marginBottom:4, fontSize:12, fontWeight:500, color:"var(--text2)" }}>LESS: Non-taxable income (transferred out)</div>
+        {/* STEP 1: Net profit/(loss) */}
+        <div style={S.rowBase}>
+          <div style={{ fontSize:13, display:"flex", alignItems:"center" }}>
+            Net profit/(loss) per accounts (before tax){infoBtn("netProfit")}
+          </div>
+          <div />{numCell(fm(res.npbt, false), res.npbt < 0)}
+        </div>
+
+        {/* STEP 2: LESS other income first */}
+        <div style={{ marginTop:8, marginBottom:4, fontSize:12, fontWeight:500, color:"var(--text2)" }}>
+          LESS: Other income
+        </div>
+        <div style={S.rowBase}>
+          <div style={{ fontSize:13, display:"flex", alignItems:"center", gap:6 }}>
+            Dividend income [s.4(c)]
+            <span style={{ fontSize:10, background:"rgba(25,135,84,0.12)", color:"var(--clr-ok)", borderRadius:4, padding:"1px 6px", fontWeight:500 }}>
+              EXEMPT — Schedule 6, ITA 1967 (single-tier)
+            </span>
+          </div>
+          <div />{NumInput("dividendIncome", data.dividendIncome)}
+        </div>
+        <div style={{ fontSize:11, color:"var(--clr-info)", margin:"3px 0 2px", paddingLeft:2 }}>
+          Taxable — re-introduced to aggregate income after statutory business income
+        </div>
         {[
-          ["Dividend income – transferred to s.4(b)","dividendIncome"],
-          ["Interest income – transferred to s.4(c)","interestIncome"],
-          ["Rental income – transferred to s.4(d)",  "rentalIncome"],
-          ["Royalty income – transferred to s.4(d)", "royaltyIncome"],
+          ["Interest income [s.4(c)]", "interestIncome"],
+          ["Rental income [s.4(d)]",   "rentalIncome"],
+          ["Royalty income [s.4(d)]",  "royaltyIncome"],
         ].map(([label, field]) => (
           <div key={field} style={S.rowBase}>
             <div style={{ fontSize:13 }}>{label}</div><div />
             {NumInput(field, data[field])}
           </div>
         ))}
-        {res.totalNTI > 0 && <div style={S.rowTotal}><div style={{ fontSize:13 }}>Total transferred out</div><div /><div style={S.numCell}>{fm(-res.totalNTI)}</div></div>}
+        {res.totalTransferOut > 0 && (
+          <div style={S.rowTotal}>
+            <div style={{ fontSize:13 }}>Total other income</div>
+            <div /><div style={S.numCell}>{fm(-res.totalTransferOut)}</div>
+          </div>
+        )}
 
-        <div style={S.rowGrand}><div>Adjusted income</div><div />{numCell(fm(res.adjIncome, false), res.adjIncome < 0)}</div>
+        {/* Business profit/(loss) subtotal */}
+        <div style={{ ...S.rowTotal, borderTop:"1px solid var(--border2)", background:"var(--bg2)", borderRadius:4, padding:"6px 8px", marginTop:4 }}>
+          <div style={{ fontSize:13, fontStyle:"italic", color:"var(--text2)" }}>Business profit/(loss)</div>
+          <div />{numCell(fm(res.businessProfit, false), res.businessProfit < 0)}
+        </div>
 
-        {/* B. Capital Allowances */}
+        {/* STEP 3: ADD non-allowable expenses (or all expenses if no revenue) */}
+        {!res.noRevenue && <>
+          <div style={{ marginTop:8, marginBottom:4, fontSize:12, fontWeight:500, color:"var(--text2)" }}>ADD: Non-allowable expenses</div>
+          {[
+            ["Depreciation & amortisation per accounts [s.39(1)(a)]",               "depreciation",           "depreciation"],
+            ["Entertainment expenses – 50% disallowed [s.39(1)(l), PR 4/2015]",     "entertainmentDisallowed","entertainment"],
+            ["Penalties, fines & surcharges [s.39(1)(a)]",                          "penalties",              "penalties"],
+            ["Donations to non-approved bodies [s.44(6)]",                          "nonApprovedDonations",   "donationsNonApproved"],
+            ["Income tax provision (current & deferred) [s.39(1)(a)]",              "incomeTaxProvision",     "taxProvision"],
+            ["Private & personal expenses [s.39(1)(a)]",                            "privateExpenses",        "privateExpenses"],
+            ["Capital items incorrectly charged to P&L [s.39(1)(a)]",               "capitalItemsToAddBack",  "capitalItems"],
+            ["Other non-allowable items",                                            "otherAddBacks",          null],
+          ].map(([label, field, nk]) => (
+            <div key={field} style={S.rowBase}>
+              <div style={{ fontSize:13, display:"flex", alignItems:"center" }}>{label}{infoBtn(nk)}</div>
+              <div />{NumInput(field, data[field])}
+            </div>
+          ))}
+          <div style={S.rowTotal}><div style={{ fontSize:13 }}>Total add-backs</div><div /><div style={S.numCell}>{fm(res.totalAB)}</div></div>
+        </>}
+
+        {res.noRevenue && res.noRevenueAddBack > 0 && <>
+          <div style={{ marginTop:8, marginBottom:4, fontSize:12, fontWeight:500, color:"var(--clr-danger)" }}>
+            ADD: All P&amp;L expenses — fully disallowed [s.33 ITA 1967 — no business gross income]
+          </div>
+          <div style={S.rowBase}>
+            <div style={{ fontSize:13, paddingLeft:16 }}>Total business expenses per accounts (all non-allowable)</div>
+            <div style={S.numCell}>{fm(res.noRevenueAddBack)}</div>
+            <div />
+          </div>
+          <div style={S.rowTotal}>
+            <div style={{ fontSize:13 }}>Total add-backs (all disallowed)</div>
+            <div style={S.numCell}>{fm(res.noRevenueAddBack)}</div>
+            <div />
+          </div>
+        </>}
+
+        {/* STEP 4: Capital allowances */}
         <div style={S.secHd}>B. Capital allowances (Schedule 3, ITA 1967){infoBtn("capitalAllowances")}</div>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
           <div style={{ fontSize:12, fontWeight:500, color:"var(--text2)" }}>LESS: Capital allowances claimed</div>
@@ -912,13 +1017,22 @@ function App() {
 
         {/* C. Aggregate Income */}
         <div style={S.secHd}>C. Aggregate income</div>
-        {res.totalNTI > 0 && <>
-          <div style={{ marginBottom:4, fontSize:12, fontWeight:500, color:"var(--text2)" }}>ADD: Other statutory income</div>
-          {res.div  > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Dividend income [s.4(b)]</div><div />{numCell(fm(res.div), false)}</div>}
+        {res.taxableOther > 0 && <>
+          <div style={{ marginBottom:4, fontSize:12, fontWeight:500, color:"var(--text2)" }}>
+            ADD: Other statutory income re-introduced [s.4(c) &amp; s.4(d)]
+          </div>
+          <div style={{ fontSize:11, color:"var(--clr-info)", marginBottom:4, paddingLeft:2 }}>
+            Dividend income is NOT re-introduced — exempt for companies under Schedule 6 ITA 1967 (single-tier system)
+          </div>
           {res.inte > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Interest income [s.4(c)]</div><div />{numCell(fm(res.inte), false)}</div>}
           {res.ren  > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Rental income [s.4(d)]</div><div />{numCell(fm(res.ren), false)}</div>}
           {res.roy  > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Royalty income [s.4(d)]</div><div />{numCell(fm(res.roy), false)}</div>}
         </>}
+        {res.div > 0 && res.taxableOther === 0 && (
+          <div style={{ fontSize:11, color:"var(--clr-ok)", padding:"4px 0" }}>
+            ✓ Dividend income of RM {fmAbs(res.div)} is exempt (Schedule 6, single-tier) — not included in aggregate income.
+          </div>
+        )}
         <div style={S.rowGrand}><div>Aggregate income</div><div />{numCell(fm(res.aggregateIncome, false), res.aggregateIncome < 0)}</div>
 
         {/* D. Chargeable Income */}
