@@ -145,10 +145,10 @@ function computeTax(d, isSME) {
   // Dividend income: EXEMPT for companies under single-tier system (Schedule 6, ITA 1967).
   // Transferred OUT of business income but NOT re-introduced to aggregate income.
   const div = v(d.dividendIncome);
-  // Interest s.4(c), Rental s.4(d), Royalty s.4(d): taxable — transferred out, then re-introduced
-  const inte=v(d.interestIncome), ren=v(d.rentalIncome), roy=v(d.royaltyIncome);
-  const taxableOther = inte + ren + roy;          // re-introduced to aggregate income
-  const totalTransferOut = div + inte + ren + roy; // all P&L other income transferred out
+  // Interest s.4(c), Rental s.4(d), Royalty s.4(d), Other s.4(f): taxable — transferred out, then re-introduced
+  const inte=v(d.interestIncome), ren=v(d.rentalIncome), roy=v(d.royaltyIncome), s4f=v(d.otherSectionFIncome);
+  const taxableOther = inte + ren + roy + s4f;     // re-introduced to aggregate income
+  const totalTransferOut = div + inte + ren + roy + s4f; // all P&L other income transferred out
 
   // s.33 ITA 1967: If NO business revenue, ALL expenses are non-allowable.
   // Adjusted income = gross business revenue = 0.
@@ -209,7 +209,7 @@ function computeTax(d, isSME) {
   return {
     npbt, dep, ent, pen, nonDon, taxProv, priv, capIt, other, totalAB,
     noRevenue, noRevenueAddBack, grossRev,
-    div, inte, ren, roy, taxableOther, totalTransferOut, businessProfit,
+    div, inte, ren, roy, s4f, taxableOther, totalTransferOut, businessProfit,
     totalNTI: totalTransferOut,   // alias kept for PDF generator compatibility
     adjIncome, caRows, totalCA, unusedCA,
     statIncome, aggregateIncome, maxDon, donDeduct, approvedDonations: v(d.approvedDonations),
@@ -225,7 +225,7 @@ function computeTax(d, isSME) {
 const INIT = {
   grossRevenue:"", netProfitBeforeTax:0, depreciation:0, entertainmentDisallowed:0, penalties:0,
   nonApprovedDonations:0, incomeTaxProvision:0, privateExpenses:0, capitalItemsToAddBack:0, otherAddBacks:0,
-  dividendIncome:0, interestIncome:0, rentalIncome:0, royaltyIncome:0,
+  dividendIncome:0, interestIncome:0, rentalIncome:0, royaltyIncome:0, otherSectionFIncome:0,
   capitalAllowances: {
     plantMachinery:    { label:"Plant & Machinery",           ia:0, aa:0, balancingCharge:0, balancingAllowance:0 },
     motorVehicles:     { label:"Motor Vehicles",              ia:0, aa:0, balancingCharge:0, balancingAllowance:0 },
@@ -240,7 +240,7 @@ const INIT = {
 const DEMO = {
   grossRevenue:2000000, netProfitBeforeTax:850000, depreciation:125000, entertainmentDisallowed:15000, penalties:3200,
   nonApprovedDonations:5000, incomeTaxProvision:180000, privateExpenses:12000, capitalItemsToAddBack:8500, otherAddBacks:4300,
-  dividendIncome:20000, interestIncome:8500, rentalIncome:0, royaltyIncome:0,
+  dividendIncome:20000, interestIncome:8500, rentalIncome:0, royaltyIncome:0, otherSectionFIncome:0,
   capitalAllowances: {
     plantMachinery:    { label:"Plant & Machinery",           ia:18000, aa:25200, balancingCharge:0, balancingAllowance:0 },
     motorVehicles:     { label:"Motor Vehicles",              ia:20000, aa:20000, balancingCharge:0, balancingAllowance:0 },
@@ -271,6 +271,7 @@ STEP 2 — FIELD MAPPING GUIDE (common Malaysian account labels → JSON field):
 - "Dividend income" / "Dividen" → dividendIncome
 - "Interest income" / "Pendapatan faedah" → interestIncome
 - "Rental income" / "Pendapatan sewa" → rentalIncome
+- "Other income" / "Sundry income" / "Miscellaneous income" / "Gain on disposal" / income not categorised as dividend/interest/rental/royalty → otherSectionFIncome [s.4(f)]
 - "CP204" / "Instalment tax paid" → cp204Payments
 - Company name from header/footer → companyInfo.name
 - Financial year end → basisPeriodEnd (derive yearOfAssessment and basisPeriodStart from this)
@@ -361,6 +362,7 @@ ${res.div>0?`<tr><td class="indent2">Dividend income [s.4(c)] <em>(EXEMPT — Sc
 ${res.inte>0?`<tr><td class="indent2">Interest income [s.4(c)]</td><td class="col1">(${R(res.inte)})</td><td></td></tr>`:""}
 ${res.ren>0?`<tr><td class="indent2">Rental income [s.4(d)]</td><td class="col1">(${R(res.ren)})</td><td></td></tr>`:""}
 ${res.roy>0?`<tr><td class="indent2">Royalty income [s.4(d)]</td><td class="col1">(${R(res.roy)})</td><td></td></tr>`:""}
+${res.s4f>0?`<tr><td class="indent2">Other income [s.4(f)]</td><td class="col1">(${R(res.s4f)})</td><td></td></tr>`:""}
 <tr class="underline"><td class="indent1 bold">Total other income</td><td class="col1 bold">(${R(res.totalTransferOut)})</td><td></td></tr>
 <tr><td class="indent1" style="font-style:italic">Business profit/(loss)</td><td></td><td class="col2" style="font-style:italic">${fm(res.businessProfit,false)}</td></tr>
 `:``}
@@ -399,7 +401,8 @@ ${res.taxableOther>0?`
 <tr><td class="indent2" colspan="3" style="font-style:italic;font-size:8.5pt">Note: Dividend income is EXEMPT for companies under Schedule 6 ITA 1967 (single-tier system) — not re-introduced.</td></tr>
 ${res.inte>0?`<tr><td class="indent2">Interest income [s.4(c)]</td><td class="col1">${R(res.inte)}</td><td></td></tr>`:""}
 ${res.ren>0?`<tr><td class="indent2">Rental income [s.4(d)]</td><td class="col1">${R(res.ren)}</td><td></td></tr>`:""}
-${res.roy>0?`<tr><td class="indent2">Royalty income [s.4(d)]</td><td class="col1">${R(res.roy)}</td><td></td></tr>`:""}`:``}
+${res.roy>0?`<tr><td class="indent2">Royalty income [s.4(d)]</td><td class="col1">${R(res.roy)}</td><td></td></tr>`:""}
+${res.s4f>0?`<tr><td class="indent2">Other income [s.4(f)]</td><td class="col1">${R(res.s4f)}</td><td></td></tr>`:""}`:``}
 <tr class="grand"><td>AGGREGATE INCOME</td><td></td><td class="col2">${fm(res.aggregateIncome,false)}</td></tr>
 ${res.donDeduct>0?`<tr><td class="indent1">LESS: Approved donations [s.44(6)] (max 10% = RM${R(res.maxDon)})</td><td class="col1">(${R(res.donDeduct)})</td><td></td></tr>`:""}
 <tr class="underline"><td class="bold">TOTAL INCOME</td><td></td><td class="col2 bold">${fm(res.totalIncome,false)}</td></tr>
@@ -601,7 +604,7 @@ function App() {
           incomeTaxProvision:n(p.incomeTaxProvision), privateExpenses:n(p.privateExpenses),
           capitalItemsToAddBack:n(p.capitalItemsToAddBack), otherAddBacks:n(p.otherAddBacks),
           dividendIncome:n(p.dividendIncome), interestIncome:n(p.interestIncome),
-          rentalIncome:n(p.rentalIncome), royaltyIncome:n(p.royaltyIncome),
+          rentalIncome:n(p.rentalIncome), royaltyIncome:n(p.royaltyIncome), otherSectionFIncome:n(p.otherSectionFIncome),
           approvedDonations:n(p.approvedDonations),
           capitalAllowances: {
             plantMachinery:    { label:"Plant & Machinery",           ...ca("plantMachinery")    },
@@ -930,9 +933,10 @@ function App() {
           Taxable — re-introduced to aggregate income after statutory business income
         </div>
         {[
-          ["Interest income [s.4(c)]", "interestIncome"],
-          ["Rental income [s.4(d)]",   "rentalIncome"],
-          ["Royalty income [s.4(d)]",  "royaltyIncome"],
+          ["Interest income [s.4(c)]",                           "interestIncome"],
+          ["Rental income [s.4(d)]",                             "rentalIncome"],
+          ["Royalty income [s.4(d)]",                            "royaltyIncome"],
+          ["Other income [s.4(f)] — sundry / miscellaneous income", "otherSectionFIncome"],
         ].map(([label, field]) => (
           <div key={field} style={S.rowBase}>
             <div style={{ fontSize:13 }}>{label}</div><div />
@@ -1027,6 +1031,7 @@ function App() {
           {res.inte > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Interest income [s.4(c)]</div><div />{numCell(fm(res.inte), false)}</div>}
           {res.ren  > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Rental income [s.4(d)]</div><div />{numCell(fm(res.ren), false)}</div>}
           {res.roy  > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Royalty income [s.4(d)]</div><div />{numCell(fm(res.roy), false)}</div>}
+          {res.s4f  > 0 && <div style={S.rowBase}><div style={{ fontSize:13, paddingLeft:16 }}>Other income [s.4(f)]</div><div />{numCell(fm(res.s4f), false)}</div>}
         </>}
         {res.div > 0 && res.taxableOther === 0 && (
           <div style={{ fontSize:11, color:"var(--clr-ok)", padding:"4px 0" }}>
